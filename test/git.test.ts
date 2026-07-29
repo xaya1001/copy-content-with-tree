@@ -373,7 +373,7 @@ test('buildCopyDiff rejects when allowGit is false', async () => {
   );
 });
 
-test('untracked patch uses portable os.devNull', async () => {
+test('untracked patch uses a Git-compatible null device', async () => {
   const root = await makeTemp('git-devnull-');
   try {
     await initRepoWithUpstream(root);
@@ -391,7 +391,6 @@ test('untracked patch uses portable os.devNull', async () => {
     assert.match(result.output, /\+hello-null/);
     // Git may display the left side as /dev/null or NUL depending on platform/version.
     assert.match(result.output, /\/dev\/null|\bNUL\b/i);
-    assert.equal(os.devNull, process.platform === 'win32' ? '\\\\.\\NUL' : '/dev/null');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -536,8 +535,6 @@ test('trusted collect/diff discovery propagates GitNotFound when git missing fro
 
 test('collectFiles propagates ls-files GitCommandError for a covered repo target', async () => {
   const root = await makeTemp('git-lsfiles-fail-');
-  const fakeBin = await makeTemp('fake-git-lsfiles-');
-  const previousPath = process.env.PATH;
   try {
     const work = path.join(root, 'work');
     await fs.mkdir(work, { recursive: true });
@@ -546,37 +543,12 @@ test('collectFiles propagates ls-files GitCommandError for a covered repo target
     git(work, ['add', 'a.ts']);
     git(work, ['commit', '-m', 'init']);
 
-    const shimJs = path.join(fakeBin, 'git-shim.js');
-    await fs.writeFile(
-      shimJs,
-      [
-        'const args = process.argv.slice(2);',
-        'if (args.includes("ls-files")) {',
-        '  console.error("simulated ls-files failure");',
-        '  process.exit(128);',
-        '}',
-        'if (args.includes("--show-toplevel")) {',
-        `  process.stdout.write(${JSON.stringify(work)} + "\\n");`,
-        '  process.exit(0);',
-        '}',
-        'process.exit(0);',
-        '',
-      ].join('\n'),
-    );
-
-    if (process.platform === 'win32') {
-      await fs.writeFile(
-        path.join(fakeBin, 'git.cmd'),
-        `@echo off\r\nnode "%~dp0git-shim.js" %*\r\n`,
-      );
-    } else {
-      await fs.writeFile(
-        path.join(fakeBin, 'git'),
-        `#!/bin/sh\nexec node "$(dirname "$0")/git-shim.js" "$@"\n`,
-        { mode: 0o755 },
-      );
-    }
-    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ''}`;
+    // Keep repository discovery functional but make the index unreadable as an
+    // index file. This exercises a real `git ls-files` failure on every OS
+    // without relying on platform-specific executable shim resolution.
+    const indexPath = path.join(work, '.git', 'index');
+    await fs.rm(indexPath);
+    await fs.mkdir(indexPath);
 
     await assert.rejects(
       () =>
@@ -596,9 +568,7 @@ test('collectFiles propagates ls-files GitCommandError for a covered repo target
       (err: unknown) => err instanceof GitCommandError,
     );
   } finally {
-    process.env.PATH = previousPath;
     await fs.rm(root, { recursive: true, force: true });
-    await fs.rm(fakeBin, { recursive: true, force: true });
   }
 });
 

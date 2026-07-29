@@ -17,6 +17,7 @@ import {
   runGit,
   type GitNameStatusEntry,
 } from './exec';
+
 import {
   discoveryCwdForTarget,
   getRepoRoot,
@@ -27,6 +28,10 @@ import {
 } from './discovery';
 import { IgnoreStack, pushGitignoreForDir } from './ignore-stack';
 import * as fs from 'node:fs/promises';
+
+// Git for Windows recognizes the DOS device name, while Node's `\\.\NUL`
+// spelling is not accepted reliably by `git diff --no-index`.
+const gitNullDevice = process.platform === 'win32' ? 'NUL' : devNull;
 
 export interface DiffBuildOptions {
   workspaceFolder: string;
@@ -209,8 +214,8 @@ export async function buildGitDiff(options: DiffBuildOptions): Promise<DiffBuild
         '--no-index',
         `--unified=${options.unifiedLines}`,
         '--',
-        // Portable empty file for `git diff --no-index` (NUL on Windows, /dev/null elsewhere).
-        devNull,
+        // Portable empty file for `git diff --no-index`.
+        gitNullDevice,
         file,
       ]),
       {
