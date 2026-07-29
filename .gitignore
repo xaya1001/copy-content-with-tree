@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+out-test-electron/
+coverage/
+.vscode-test/
+*.vsix
+*.tgz
+npm-debug.log*
+.DS_Store
+
+# Local agent instructions are workspace policy, not project source.
+AGENTS.md

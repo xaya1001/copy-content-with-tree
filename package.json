@@ -1,0 +1,273 @@
+{
+  "name": "copy-content-with-tree",
+  "displayName": "Copy Content with Tree",
+  "description": "Copy selected files/folders content with a path tree for AI context, plus Copy Tree and Copy Git Diff with Tree.",
+  "version": "0.1.0",
+  "publisher": "xaya1001",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Xiao Yao",
+  "homepage": "https://github.com/xaya1001/copy-content-with-tree",
+  "bugs": {
+    "url": "https://github.com/xaya1001/copy-content-with-tree/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xaya1001/copy-content-with-tree.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0",
+    "node": ">=22"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "copy",
+    "clipboard",
+    "tree",
+    "diff",
+    "gitignore",
+    "ai",
+    "context"
+  ],
+  "activationEvents": [
+    "onCommand:copyContentWithTree.copy",
+    "onCommand:copyContentWithTree.copyTree",
+    "onCommand:copyContentWithTree.copyDiff",
+    "onCommand:copyContentWithTree.debugSelection"
+  ],
+  "main": "./dist/extension.js",
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "This extension reads local files and runs Git on the filesystem."
+    },
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Copy Content and Copy Tree work in untrusted workspaces using the filesystem and nested .gitignore rules only (no Git). Copy Git Diff requires workspace trust because it runs Git.",
+      "restrictedConfigurations": [
+        "copyContentWithTree.diffAutoFetch",
+        "copyContentWithTree.allowExternalSymlinkTargets",
+        "copyContentWithTree.pathRewrite"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:test-electron": "node scripts/build-test-electron.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
+    "test": "npm run build && node scripts/run-node-tests.mjs",
+    "test:coverage": "npm run build && node scripts/run-node-tests.mjs --coverage",
+    "test:electron": "npm run build && npm run build:test-electron && node scripts/run-vscode-test.mjs",
+    "test:electron:min": "npm run build && npm run build:test-electron && VSCODE_TEST_VERSION=1.80.0 node scripts/run-vscode-test.mjs",
+    "test:electron:stable": "npm run build && npm run build:test-electron && VSCODE_TEST_VERSION=stable node scripts/run-vscode-test.mjs",
+    "audit": "npm audit --audit-level=low",
+    "package": "npm run build && vsce package --no-dependencies",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:coverage && npm run audit && npm run package && node scripts/check-vsix.mjs && npm run test:electron:stable",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "ignore": "^7.0.6",
+    "micromatch": "^4.0.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/micromatch": "^4.0.9",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.80.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
+    "c8": "^12.0.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.4.1",
+    "eslint-config-prettier": "^10.1.1",
+    "prettier": "^3.5.3",
+    "tsx": "^4.23.1",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.65.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "copyContentWithTree.copy",
+        "title": "Copy Content with Tree"
+      },
+      {
+        "command": "copyContentWithTree.copyTree",
+        "title": "Copy Tree"
+      },
+      {
+        "command": "copyContentWithTree.copyDiff",
+        "title": "Copy Git Diff with Tree"
+      },
+      {
+        "command": "copyContentWithTree.debugSelection",
+        "title": "Copy Content with Tree: Debug Selection"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "copyContentWithTree.copy",
+          "when": "resourceScheme == file",
+          "group": "navigation@100"
+        },
+        {
+          "command": "copyContentWithTree.copyTree",
+          "when": "resourceScheme == file",
+          "group": "navigation@99"
+        },
+        {
+          "command": "copyContentWithTree.copyDiff",
+          "when": "resourceScheme == file && isWorkspaceTrusted",
+          "group": "navigation@101"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Copy Content with Tree",
+      "properties": {
+        "copyContentWithTree.exclude": {
+          "type": "array",
+          "default": [
+            "**/node_modules/**",
+            "package-lock.json",
+            "npm-shrinkwrap.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "bun.lock",
+            "bun.lockb",
+            "playwright-report",
+            "test-results",
+            "coverage",
+            ".nyc_output",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".mypy_cache",
+            ".cache",
+            ".turbo",
+            "**/.git/**",
+            "**/dist/**",
+            "**/out/**",
+            "**/build/**",
+            "**/.next/**",
+            "**/.venv/**",
+            "**/__pycache__/**"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Exclude patterns merged with built-in excludes when copying folders. Plain names match full path segments only; globs use micromatch."
+        },
+        "copyContentWithTree.blacklist": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional exclude patterns merged with built-in excludes and copyContentWithTree.exclude."
+        },
+        "copyContentWithTree.useGitignore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Respect .gitignore. In Git repositories, Git is the source of truth for tracked/ignored files. Outside Git, nested .gitignore files are applied while walking."
+        },
+        "copyContentWithTree.gitignoreFileName": {
+          "type": "string",
+          "default": ".gitignore",
+          "minLength": 1,
+          "description": "Gitignore file name to read when walking non-Git trees or filtering untracked diff paths."
+        },
+        "copyContentWithTree.maxFileSizeKB": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "description": "Skip files larger than this size in KB when copying content."
+        },
+        "copyContentWithTree.maxOutputChars": {
+          "type": "number",
+          "default": 20000000,
+          "minimum": 0,
+          "description": "Abort before writing to the clipboard if the generated output exceeds this many characters. Set 0 to disable."
+        },
+        "copyContentWithTree.includeSkippedInTree": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether skipped binary/large/unreadable/ignored files should still appear in the tree with a skip comment."
+        },
+        "copyContentWithTree.diffAutoFetch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run git fetch --prune before copying Git diff against the selected branch upstream. Disabled by default."
+        },
+        "copyContentWithTree.diffIncludeUntracked": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include untracked files in Copy Git Diff with Tree by appending them as new-file patches."
+        },
+        "copyContentWithTree.diffUnifiedLines": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Number of unchanged context lines to include in Copy Git Diff with Tree patches. Set 3 for normal git diff context."
+        },
+        "copyContentWithTree.followFileSymlinks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Copy file symlink target content while keeping the symlink path in headers. Targets outside the workspace/selection boundary are refused unless allowExternalSymlinkTargets is enabled. Directory symlinks are never traversed."
+        },
+        "copyContentWithTree.allowExternalSymlinkTargets": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow following file symlink targets that resolve outside the workspace or selection boundary. Disabled by default for safety."
+        },
+        "copyContentWithTree.pathRewrite": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "minLength": 1
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Optional absolute-path rewrite rules for symlink targets (for example container vs host mounts). Default is empty; do not put private host paths in shared settings."
+        },
+        "copyContentWithTree.gitTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "description": "Timeout in milliseconds for each Git subprocess."
+        },
+        "copyContentWithTree.gitMaxBufferBytes": {
+          "type": "number",
+          "default": 67108864,
+          "minimum": 1024,
+          "description": "Maximum stdout/stderr bytes retained from each Git subprocess."
+        }
+      }
+    }
+  },
+  "overrides": {
+    "brace-expansion": "^5.0.8",
+    "minimatch": "^10.1.1",
+    "serialize-javascript": "^7.0.7",
+    "diff": "^9.0.0"
+  }
+}
