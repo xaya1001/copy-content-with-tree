@@ -151,7 +151,13 @@ test('unicode, spaces, tab, trailing newline, and literal  #  filenames', async 
     await fs.writeFile(path.join(root, 'my file.ts'), 'x\n');
     await fs.writeFile(path.join(root, 'file  # weird.ts'), 'y\n');
     const tabName = `tab${'\t'}name.ts`;
-    await fs.writeFile(path.join(root, tabName), 't\n');
+    let wroteTab = false;
+    try {
+      await fs.writeFile(path.join(root, tabName), 't\n');
+      wroteTab = true;
+    } catch {
+      // Windows rejects tab (and other control chars) in filenames.
+    }
     const spaced = '  padded  .txt';
     await fs.writeFile(path.join(root, spaced), 'p\n');
     const newlineName = `line${'\n'}end.ts`;
@@ -173,7 +179,10 @@ test('unicode, spaces, tab, trailing newline, and literal  #  filenames', async 
     assert.match(result.output, /你好 世界\.md/);
     assert.match(result.output, /my file\.ts/);
     assert.match(result.output, /file {2}# weird\.ts/);
-    assert.match(result.output, new RegExp(escapePathForDisplay(tabName).replace(/\\/g, '\\\\')));
+    assert.equal(escapePathForDisplay(tabName), 'tab\\tname.ts');
+    if (wroteTab) {
+      assert.match(result.output, new RegExp(escapePathForDisplay(tabName).replace(/\\/g, '\\\\')));
+    }
     assert.match(result.output, / {2}padded {2}\.txt/);
     if (wroteNewline) {
       assert.match(result.output, /line\\nend\.ts/);

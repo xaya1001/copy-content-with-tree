@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   DEFAULT_CONFIG,
@@ -18,6 +21,9 @@ import {
   rewritePath,
   isPathInside,
   isPathInsideOrEqual,
+  canonicalizePath,
+  canonicalPathsEqual,
+  isCanonicalPathInsideOrEqual,
 } from '../src/core/paths';
 import { parseNulPaths, parseNameStatusNul } from '../src/git/exec';
 import { shouldExcludeDiffEntry, statusLabel } from '../src/git/diff';
@@ -162,4 +168,46 @@ test('NUL path parsing preserves spaces, unicode, tabs, newlines, and leading/tr
   assert.equal(entries[1]!.path, 'src/new.ts');
   assert.equal(statusLabel(entries[1]!), 'renamed from src/old.ts');
   assert.equal(statusLabel(entries[2]!), 'deleted');
+});
+
+test('canonicalizePath collapses directory aliases and keeps missing leaf segments', async (t) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'cwt-canon-'));
+  const realDir = path.join(base, 'real');
+  const aliasDir = path.join(base, 'alias');
+  try {
+    await fs.mkdir(realDir, { recursive: true });
+    await fs.writeFile(path.join(realDir, 'keep.txt'), 'x\n');
+    try {
+      if (process.platform === 'win32') {
+        await fs.symlink(realDir, aliasDir, 'junction');
+      } else {
+        await fs.symlink(realDir, aliasDir, 'dir');
+      }
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+        t.skip(`symlinks unavailable on this Windows host (${code})`);
+        return;
+      }
+      throw err;
+    }
+
+    const realCanon = await canonicalizePath(realDir);
+    const aliasCanon = await canonicalizePath(aliasDir);
+    assert.equal(aliasCanon, realCanon);
+    assert.ok(canonicalPathsEqual(aliasCanon, realCanon));
+    assert.equal(
+      await isCanonicalPathInsideOrEqual(aliasDir, path.join(realDir, 'keep.txt')),
+      true,
+    );
+    assert.equal(
+      await isCanonicalPathInsideOrEqual(realDir, path.join(aliasDir, 'keep.txt')),
+      true,
+    );
+
+    const missing = path.join(aliasDir, 'gone', 'file.ts');
+    assert.equal(await canonicalizePath(missing), path.join(realCanon, 'gone', 'file.ts'));
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
 });

@@ -1,6 +1,13 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { buildRewriteCandidates, isPathInside, toPosixPath, toSafePathLabel } from '../core/paths';
+import {
+  buildRewriteCandidates,
+  canonicalizePath,
+  canonicalPathsEqual,
+  isPathInside,
+  toPosixPath,
+  toSafePathLabel,
+} from '../core/paths';
 import type { PathRewriteRule } from '../core/config';
 
 export type ResolvedKind = 'file' | 'directory' | 'missing';
@@ -19,6 +26,23 @@ export interface SymlinkPolicy {
   pathRewrite: readonly PathRewriteRule[];
   /** Absolute roots that count as "inside" for symlink targets (workspace / selection). */
   boundaryRoots: readonly string[];
+}
+
+async function isOutsideBoundary(
+  resolvedTarget: string,
+  boundaryRoots: readonly string[],
+): Promise<boolean> {
+  const canonicalTarget = await canonicalizePath(resolvedTarget);
+  for (const root of boundaryRoots) {
+    const canonicalRoot = await canonicalizePath(root);
+    if (
+      canonicalPathsEqual(canonicalRoot, canonicalTarget) ||
+      isPathInside(canonicalRoot, canonicalTarget)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function resolveReadablePath(
@@ -45,10 +69,7 @@ export async function resolveReadablePath(
     } catch {
       resolvedTarget = filePath;
     }
-    const external = !policy.boundaryRoots.some(
-      (root) =>
-        isPathInside(root, resolvedTarget) || path.resolve(root) === path.resolve(resolvedTarget),
-    );
+    const external = await isOutsideBoundary(resolvedTarget, policy.boundaryRoots);
     if (st.isFile()) {
       return { kind: 'file', readPath: resolvedTarget, chain: [], external };
     }

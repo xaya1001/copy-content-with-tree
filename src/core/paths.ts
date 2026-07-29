@@ -1,3 +1,4 @@
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
 /**
@@ -11,6 +12,67 @@ export function toPosixPath(value: string): string {
     return text.replace(/\\/g, '/');
   }
   return text;
+}
+
+/**
+ * Canonicalize a filesystem path for identity and containment comparisons.
+ *
+ * Uses `realpath` on the nearest existing ancestor (so deleted / not-yet-created
+ * selections still compare correctly), then appends the missing trailing
+ * segments. This collapses macOS `/var` vs `/private/var`, directory symlink
+ * aliases, and Windows short/long (8.3) path forms onto one physical path.
+ *
+ * Does not change user-facing display paths — callers keep the original string
+ * for clipboard output and only use this result for comparisons / pathspecs.
+ */
+export async function canonicalizePath(inputPath: string): Promise<string> {
+  const absolute = path.resolve(inputPath);
+  const suffixes: string[] = [];
+  let cursor = absolute;
+
+  for (;;) {
+    try {
+      const real = await fs.realpath(cursor);
+      return suffixes.length === 0 ? real : path.resolve(real, ...suffixes);
+    } catch {
+      const parent = path.dirname(cursor);
+      if (parent === cursor) {
+        return absolute;
+      }
+      suffixes.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+/** Compare already-resolved paths; Windows equality is case-insensitive. */
+export function canonicalPathsEqual(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  if (process.platform === 'win32') {
+    return a.toLowerCase() === b.toLowerCase();
+  }
+  return a === b;
+}
+
+/**
+ * Containment check after canonicalizing both sides (symlink aliases, macOS
+ * private prefix, Windows short paths).
+ */
+export async function isCanonicalPathInside(root: string, candidate: string): Promise<boolean> {
+  return isPathInside(await canonicalizePath(root), await canonicalizePath(candidate));
+}
+
+export async function isCanonicalPathInsideOrEqual(
+  root: string,
+  candidate: string,
+): Promise<boolean> {
+  const canonicalRoot = await canonicalizePath(root);
+  const canonicalCandidate = await canonicalizePath(candidate);
+  return (
+    canonicalPathsEqual(canonicalRoot, canonicalCandidate) ||
+    isPathInside(canonicalRoot, canonicalCandidate)
+  );
 }
 
 export function trimTrailingSlash(value: string): string {
@@ -36,7 +98,7 @@ export function toDisplayPath(workspaceFolder: string, filePath: string): string
 export function isPathInside(root: string, candidate: string): boolean {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
-  if (resolvedRoot === resolvedCandidate) return true;
+  if (canonicalPathsEqual(resolvedRoot, resolvedCandidate)) return true;
   const relative = path.relative(resolvedRoot, resolvedCandidate);
   if (!relative || path.isAbsolute(relative)) return false;
   // Component-aware: only treat ".." / "../..." as outside. Names like "..foo" are inside.
@@ -47,7 +109,7 @@ export function isPathInside(root: string, candidate: string): boolean {
 export function isPathInsideOrEqual(root: string, candidate: string): boolean {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
-  return resolvedRoot === resolvedCandidate || isPathInside(root, candidate);
+  return canonicalPathsEqual(resolvedRoot, resolvedCandidate) || isPathInside(root, candidate);
 }
 
 export function rewritePath(
@@ -87,10 +149,7 @@ export function toSafePathLabel(absoluteOrRelative: string, roots: readonly stri
   }
 
   for (const root of roots) {
-    if (
-      isPathInside(root, absoluteOrRelative) ||
-      path.resolve(root) === path.resolve(absoluteOrRelative)
-    ) {
+    if (isPathInsideOrEqual(root, absoluteOrRelative)) {
       const relative = toPosixPath(path.relative(root, absoluteOrRelative));
       if (relative && !relative.startsWith('../') && relative !== '..') {
         return escapePathForDisplay(relative || '.');

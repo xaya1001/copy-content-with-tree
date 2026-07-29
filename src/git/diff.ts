@@ -2,7 +2,13 @@ import * as path from 'node:path';
 import { devNull } from 'node:os';
 import { shouldExclude } from '../core/excludes';
 import { markSkipped, type SkipStats } from '../core/output';
-import { escapePathForDisplay, isPathInsideOrEqual, toPosixPath } from '../core/paths';
+import {
+  canonicalizePath,
+  canonicalPathsEqual,
+  escapePathForDisplay,
+  isPathInsideOrEqual,
+  toPosixPath,
+} from '../core/paths';
 import { makeTree } from '../core/tree';
 import {
   formatGitUserError,
@@ -11,6 +17,7 @@ import {
   runGit,
   type GitNameStatusEntry,
 } from './exec';
+
 import {
   discoveryCwdForTarget,
   getRepoRoot,
@@ -21,6 +28,10 @@ import {
 } from './discovery';
 import { IgnoreStack, pushGitignoreForDir } from './ignore-stack';
 import * as fs from 'node:fs/promises';
+
+// Git for Windows recognizes the DOS device name, while Node's `\\.\NUL`
+// spelling is not accepted reliably by `git diff --no-index`.
+const gitNullDevice = process.platform === 'win32' ? 'NUL' : devNull;
 
 export interface DiffBuildOptions {
   workspaceFolder: string;
@@ -203,8 +214,8 @@ export async function buildGitDiff(options: DiffBuildOptions): Promise<DiffBuild
         '--no-index',
         `--unified=${options.unifiedLines}`,
         '--',
-        // Portable empty file for `git diff --no-index` (NUL on Windows, /dev/null elsewhere).
-        devNull,
+        // Portable empty file for `git diff --no-index`.
+        gitNullDevice,
         file,
       ]),
       {
@@ -228,7 +239,7 @@ export async function buildGitDiff(options: DiffBuildOptions): Promise<DiffBuild
     throw new EmptyDiffError(`no diff against ${upstream}${scope}${suffix}`);
   }
 
-  const repoLabel = safeRepoLabel(options.workspaceFolder, repoRoot);
+  const repoLabel = await safeRepoLabel(options.workspaceFolder, repoRoot);
   const tree = makeTree(
     nameOnly.map((file) => ({
       path: file,
@@ -264,9 +275,11 @@ export async function buildGitDiff(options: DiffBuildOptions): Promise<DiffBuild
   };
 }
 
-function safeRepoLabel(workspaceFolder: string, repoRoot: string): string {
-  if (path.resolve(workspaceFolder) === path.resolve(repoRoot)) return '.';
-  const relative = toPosixPath(path.relative(workspaceFolder, repoRoot));
+async function safeRepoLabel(workspaceFolder: string, repoRoot: string): Promise<string> {
+  const canonicalWorkspace = await canonicalizePath(workspaceFolder);
+  const canonicalRepo = await canonicalizePath(repoRoot);
+  if (canonicalPathsEqual(canonicalWorkspace, canonicalRepo)) return '.';
+  const relative = toPosixPath(path.relative(canonicalWorkspace, canonicalRepo));
   if (relative && !relative.startsWith('../') && relative !== '..') return relative;
   return path.basename(repoRoot);
 }
