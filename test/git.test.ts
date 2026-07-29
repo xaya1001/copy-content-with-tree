@@ -11,9 +11,14 @@ import {
   buildCopyTree,
   EmptyDiffError,
 } from '../src/commands/build';
-import { escapePathForDisplay } from '../src/core/paths';
+import { canonicalizePath, escapePathForDisplay } from '../src/core/paths';
 import { collectFiles } from '../src/fs/walk';
-import { discoverGitRepos } from '../src/git/discovery';
+import {
+  discoverGitRepos,
+  getRepoRoot,
+  toLiteralPathspec,
+  targetsToGitPathspecs,
+} from '../src/git/discovery';
 import {
   OperationCancelledError,
   parseNameStatusNul,
@@ -22,7 +27,6 @@ import {
   GitNotFoundError,
   GitCommandError,
 } from '../src/git/exec';
-import { getRepoRoot, toLiteralPathspec } from '../src/git/discovery';
 
 const NS = 'cwt';
 
@@ -266,16 +270,18 @@ test('selected target inside nested repo is discovered without scanning siblings
       timeoutMs: 15_000,
       maxBufferBytes: 1024 * 1024,
     });
-    assert.ok(fromChild.roots.some((r) => path.resolve(r) === path.resolve(child)));
-    assert.ok(!fromChild.roots.some((r) => path.resolve(r) === path.resolve(parent)));
-    assert.equal(fromChild.coveredTargets.get(path.resolve(child)), path.resolve(child));
+    const childCanon = await canonicalizePath(child);
+    const parentCanon = await canonicalizePath(parent);
+    assert.ok(fromChild.roots.some((r) => r === childCanon));
+    assert.ok(!fromChild.roots.some((r) => r === parentCanon));
+    assert.equal(fromChild.coveredTargets.get(childCanon), childCanon);
 
     const fromParent = await discoverGitRepos(parent, [parent], {
       timeoutMs: 15_000,
       maxBufferBytes: 1024 * 1024,
     });
-    assert.ok(fromParent.roots.some((r) => path.resolve(r) === path.resolve(parent)));
-    assert.ok(!fromParent.roots.some((r) => path.resolve(r) === path.resolve(child)));
+    assert.ok(fromParent.roots.some((r) => r === parentCanon));
+    assert.ok(!fromParent.roots.some((r) => r === childCanon));
 
     const tree = await buildCopyTree({
       workspaceFolder: parent,
@@ -540,22 +546,36 @@ test('collectFiles propagates ls-files GitCommandError for a covered repo target
     git(work, ['add', 'a.ts']);
     git(work, ['commit', '-m', 'init']);
 
-    const script = `#!/bin/sh
-for arg in "$@"; do
-  if [ "$arg" = "ls-files" ]; then
-    echo "simulated ls-files failure" >&2
-    exit 128
-  fi
-done
-for arg in "$@"; do
-  if [ "$arg" = "--show-toplevel" ]; then
-    printf '%s\\n' ${JSON.stringify(work)}
-    exit 0
-  fi
-done
-exit 0
-`;
-    await fs.writeFile(path.join(fakeBin, 'git'), script, { mode: 0o755 });
+    const shimJs = path.join(fakeBin, 'git-shim.js');
+    await fs.writeFile(
+      shimJs,
+      [
+        'const args = process.argv.slice(2);',
+        'if (args.includes("ls-files")) {',
+        '  console.error("simulated ls-files failure");',
+        '  process.exit(128);',
+        '}',
+        'if (args.includes("--show-toplevel")) {',
+        `  process.stdout.write(${JSON.stringify(work)} + "\\n");`,
+        '  process.exit(0);',
+        '}',
+        'process.exit(0);',
+        '',
+      ].join('\n'),
+    );
+
+    if (process.platform === 'win32') {
+      await fs.writeFile(
+        path.join(fakeBin, 'git.cmd'),
+        `@echo off\r\nnode "%~dp0git-shim.js" %*\r\n`,
+      );
+    } else {
+      await fs.writeFile(
+        path.join(fakeBin, 'git'),
+        `#!/bin/sh\nexec node "$(dirname "$0")/git-shim.js" "$@"\n`,
+        { mode: 0o755 },
+      );
+    }
     process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ''}`;
 
     await assert.rejects(
@@ -677,5 +697,80 @@ test('POSIX literal pathspecs copy and diff exactly the magic-named file', async
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('directory symlink alias matches Git realpath roots for pathspecs and collection', async (t) => {
+  const base = await makeTemp('git-alias-base-');
+  const realRoot = path.join(base, 'real-work');
+  const aliasRoot = path.join(base, 'alias-work');
+  try {
+    await fs.mkdir(realRoot, { recursive: true });
+    try {
+      if (process.platform === 'win32') {
+        await fs.symlink(realRoot, aliasRoot, 'junction');
+      } else {
+        await fs.symlink(realRoot, aliasRoot, 'dir');
+      }
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+        t.skip(`symlinks unavailable on this Windows host (${code})`);
+        return;
+      }
+      throw err;
+    }
+
+    git(realRoot, ['init']);
+    await fs.writeFile(path.join(realRoot, 'app.ts'), 'export const n = 1;\n');
+    await fs.mkdir(path.join(realRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(realRoot, 'src', 'nested.ts'), 'nested\n');
+    git(realRoot, ['add', '-A']);
+    git(realRoot, ['commit', '-m', 'init']);
+
+    const realCanon = await canonicalizePath(realRoot);
+    const aliasCanon = await canonicalizePath(aliasRoot);
+    assert.equal(aliasCanon, realCanon);
+
+    // Missing leaf under the alias still canonicalizes via the existing ancestor.
+    const missingViaAlias = path.join(aliasRoot, 'deleted-never-existed.ts');
+    assert.equal(
+      await canonicalizePath(missingViaAlias),
+      path.join(realCanon, 'deleted-never-existed.ts'),
+    );
+
+    const specs = await targetsToGitPathspecs([aliasRoot], realCanon);
+    assert.deepEqual(specs, []);
+
+    const nestedSpecs = await targetsToGitPathspecs([path.join(aliasRoot, 'src')], realCanon);
+    assert.deepEqual(nestedSpecs, ['src']);
+
+    const collected = await collectFiles({
+      workspaceFolder: aliasRoot,
+      targetPaths: [aliasRoot],
+      excludes: [],
+      useGitignore: true,
+      allowGit: true,
+      gitignoreFileName: '.gitignore',
+      includeSkippedInTree: false,
+      followFileSymlinks: true,
+      allowExternalSymlinkTargets: false,
+      pathRewrite: [],
+      git: { timeoutMs: 15_000, maxBufferBytes: 1024 * 1024 },
+    });
+    const names = collected.files.map((f) => f.displayPath).sort();
+    assert.ok(names.includes('app.ts'), `expected app.ts in ${names.join(',')}`);
+    assert.ok(names.includes('src/nested.ts'), `expected src/nested.ts in ${names.join(',')}`);
+
+    const content = await buildCopyContent({
+      workspaceFolder: aliasRoot,
+      targets: [{ fsPath: aliasRoot }],
+      config: baseConfig(),
+      allowGit: true,
+    });
+    assert.match(content.output, /export const n = 1/);
+    assert.match(content.output, /### src\/nested\.ts/);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
   }
 });

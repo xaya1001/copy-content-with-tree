@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { canonicalizePath, toPosixPath } from '../core/paths';
 import {
   GitCommandError,
   GitNotFoundError,
@@ -43,7 +44,8 @@ export async function getRepoRoot(cwd: string, config: GitExecConfig): Promise<s
   try {
     const result = await runGit(['rev-parse', '--show-toplevel'], toRunOptions(cwd, config));
     const root = result.stdout.toString('utf8').replace(/\0/g, '').trim();
-    return root || null;
+    if (!root) return null;
+    return canonicalizePath(root);
   } catch (err) {
     if (isCancellationError(err)) throw err;
     if (err instanceof GitNotFoundError) throw err;
@@ -54,7 +56,10 @@ export async function getRepoRoot(cwd: string, config: GitExecConfig): Promise<s
 
 export async function discoveryCwdForTarget(targetPath: string): Promise<string> {
   try {
-    const stat = await fs.lstat(targetPath);
+    // Follow symlinks so a selected directory alias is used as cwd (Git can see
+    // the repo through it). lstat would treat the alias as a non-directory and
+    // incorrectly climb to its parent.
+    const stat = await fs.stat(targetPath);
     return stat.isDirectory() ? targetPath : path.dirname(targetPath);
   } catch {
     return path.dirname(targetPath);
@@ -68,6 +73,8 @@ export async function discoveryCwdForTarget(targetPath: string): Promise<string>
  * a selected directory.
  *
  * Returns both the unique repo roots and which selected targets are covered by a repo.
+ * Roots and covered-target keys are canonicalized so symlink aliases / macOS
+ * `/var` vs `/private/var` / Windows short paths compare equal.
  */
 export async function discoverGitRepos(
   workspaceFolder: string,
@@ -81,15 +88,14 @@ export async function discoverGitRepos(
     const cwd = await discoveryCwdForTarget(targetPath);
     const root = await getRepoRoot(cwd, config);
     if (root) {
-      const resolved = path.resolve(root);
-      roots.add(resolved);
-      coveredTargets.set(path.resolve(targetPath), resolved);
+      roots.add(root);
+      coveredTargets.set(await canonicalizePath(targetPath), root);
     }
   }
 
   if (roots.size === 0 && targetPaths.length === 0) {
     const root = await getRepoRoot(workspaceFolder, config);
-    if (root) roots.add(path.resolve(root));
+    if (root) roots.add(root);
   }
 
   return {
@@ -103,14 +109,19 @@ export async function targetsToGitPathspecs(
   repoRoot: string,
 ): Promise<string[]> {
   const pathspecs: string[] = [];
+  const canonicalRoot = await canonicalizePath(repoRoot);
 
   for (const targetPath of targets) {
-    const relative = path.relative(repoRoot, targetPath);
-    if (!relative || relative === '') return [];
+    const canonicalTarget = await canonicalizePath(targetPath);
+    const relative = path.relative(canonicalRoot, canonicalTarget);
+    if (!relative || relative === '') {
+      // Whole-repo selection (or equivalent alias of the repo root).
+      return [];
+    }
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error(`selected path is outside the Git repository: ${targetPath}`);
     }
-    const posix = relative.split(path.sep).join('/');
+    const posix = toPosixPath(relative);
     if (!pathspecs.includes(posix)) pathspecs.push(posix);
   }
 

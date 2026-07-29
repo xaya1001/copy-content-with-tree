@@ -2,7 +2,13 @@ import * as path from 'node:path';
 import { devNull } from 'node:os';
 import { shouldExclude } from '../core/excludes';
 import { markSkipped, type SkipStats } from '../core/output';
-import { escapePathForDisplay, isPathInsideOrEqual, toPosixPath } from '../core/paths';
+import {
+  canonicalizePath,
+  canonicalPathsEqual,
+  escapePathForDisplay,
+  isPathInsideOrEqual,
+  toPosixPath,
+} from '../core/paths';
 import { makeTree } from '../core/tree';
 import {
   formatGitUserError,
@@ -228,7 +234,7 @@ export async function buildGitDiff(options: DiffBuildOptions): Promise<DiffBuild
     throw new EmptyDiffError(`no diff against ${upstream}${scope}${suffix}`);
   }
 
-  const repoLabel = safeRepoLabel(options.workspaceFolder, repoRoot);
+  const repoLabel = await safeRepoLabel(options.workspaceFolder, repoRoot);
   const tree = makeTree(
     nameOnly.map((file) => ({
       path: file,
@@ -264,9 +270,11 @@ export async function buildGitDiff(options: DiffBuildOptions): Promise<DiffBuild
   };
 }
 
-function safeRepoLabel(workspaceFolder: string, repoRoot: string): string {
-  if (path.resolve(workspaceFolder) === path.resolve(repoRoot)) return '.';
-  const relative = toPosixPath(path.relative(workspaceFolder, repoRoot));
+async function safeRepoLabel(workspaceFolder: string, repoRoot: string): Promise<string> {
+  const canonicalWorkspace = await canonicalizePath(workspaceFolder);
+  const canonicalRepo = await canonicalizePath(repoRoot);
+  if (canonicalPathsEqual(canonicalWorkspace, canonicalRepo)) return '.';
+  const relative = toPosixPath(path.relative(canonicalWorkspace, canonicalRepo));
   if (relative && !relative.startsWith('../') && relative !== '..') return relative;
   return path.basename(repoRoot);
 }

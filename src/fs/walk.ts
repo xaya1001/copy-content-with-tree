@@ -3,7 +3,13 @@ import * as path from 'node:path';
 import type { PathRewriteRule } from '../core/config';
 import { shouldExclude } from '../core/excludes';
 import { markSkipped, type SkipStats } from '../core/output';
-import { isPathInsideOrEqual, toDisplayPath, toPosixPath } from '../core/paths';
+import {
+  canonicalizePath,
+  isCanonicalPathInsideOrEqual,
+  isPathInsideOrEqual,
+  toDisplayPath,
+  toPosixPath,
+} from '../core/paths';
 import type { TreeEntry } from '../core/tree';
 import {
   discoverGitRepos,
@@ -59,7 +65,10 @@ export async function collectFiles(options: CollectOptions): Promise<CollectResu
   const skippedTreeItems: TreeEntry[] = [];
   const out: CollectedFile[] = [];
 
-  const boundaryRoots = [options.workspaceFolder, ...options.targetPaths.map((p) => p)];
+  const boundaryRoots = [
+    await canonicalizePath(options.workspaceFolder),
+    ...(await Promise.all(options.targetPaths.map((p) => canonicalizePath(p)))),
+  ];
 
   const policy: SymlinkPolicy = {
     followFileSymlinks: options.followFileSymlinks,
@@ -69,6 +78,9 @@ export async function collectFiles(options: CollectOptions): Promise<CollectResu
   };
 
   const coveredTargets = new Set<string>();
+  // Canonical workspace so Git-listed absolutes (realpath roots) still yield
+  // stable workspace-relative display paths when the selection used an alias.
+  const displayWorkspace = await canonicalizePath(options.workspaceFolder);
 
   if (options.useGitignore && options.allowGit) {
     const discovered = await discoverGitRepos(
@@ -78,7 +90,15 @@ export async function collectFiles(options: CollectOptions): Promise<CollectResu
     );
 
     if (discovered.roots.length > 0) {
-      await collectFromGitRepos(options, discovered.roots, policy, out, skippedTreeItems, stats);
+      await collectFromGitRepos(
+        options,
+        discovered.roots,
+        policy,
+        out,
+        skippedTreeItems,
+        stats,
+        displayWorkspace,
+      );
       for (const target of discovered.coveredTargets.keys()) {
         coveredTargets.add(target);
       }
@@ -87,7 +107,7 @@ export async function collectFiles(options: CollectOptions): Promise<CollectResu
 
   // Filesystem walker for targets not covered by a discovered Git repo (and when Git is off).
   for (const targetPath of options.targetPaths) {
-    if (coveredTargets.has(path.resolve(targetPath))) continue;
+    if (coveredTargets.has(await canonicalizePath(targetPath))) continue;
 
     const stack = new IgnoreStack();
     if (options.useGitignore) {
@@ -120,13 +140,17 @@ async function collectFromGitRepos(
   out: CollectedFile[],
   skippedTreeItems: TreeEntry[],
   stats: SkipStats,
+  displayWorkspace: string,
 ): Promise<void> {
   const seenAbs = new Set<string>();
 
   for (const repoRoot of repos) {
-    const relevantTargets = options.targetPaths.filter((target) =>
-      isPathInsideOrEqual(repoRoot, target),
-    );
+    const relevantTargets: string[] = [];
+    for (const target of options.targetPaths) {
+      if (await isCanonicalPathInsideOrEqual(repoRoot, target)) {
+        relevantTargets.push(target);
+      }
+    }
 
     if (relevantTargets.length === 0) continue;
 
@@ -140,7 +164,7 @@ async function collectFromGitRepos(
       if (seenAbs.has(absolute)) continue;
       seenAbs.add(absolute);
 
-      const displayPath = toDisplayPath(options.workspaceFolder, absolute);
+      const displayPath = toDisplayPath(displayWorkspace, absolute);
       if (
         shouldExclude(displayPath, options.excludes) ||
         shouldExclude(absolute, options.excludes)
@@ -152,7 +176,7 @@ async function collectFromGitRepos(
 
       await collectSinglePath({
         filePath: absolute,
-        workspaceFolder: options.workspaceFolder,
+        workspaceFolder: displayWorkspace,
         options,
         policy,
         out,
